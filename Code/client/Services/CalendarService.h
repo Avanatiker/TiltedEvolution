@@ -6,6 +6,7 @@
 
 struct ServerTimeSettings;
 struct NotifyTimeSkip;
+struct NotifyPause;
 struct TimeSkipRequestEvent;
 struct DisconnectedEvent;
 struct World;
@@ -26,15 +27,18 @@ private:
     void OnTimeUpdate(const ServerTimeSettings&) noexcept;
     void OnTimeSkipRequest(const TimeSkipRequestEvent&) noexcept;
     void OnNotifyTimeSkip(const NotifyTimeSkip&) noexcept;
+    void OnNotifyPause(const NotifyPause&) noexcept;
     void HandleUpdate(const UpdateEvent&) noexcept;
     void OnDisconnected(const DisconnectedEvent&) noexcept;
 
     void ToggleGameClock(bool aEnable);
+    void SetPaused(bool aPaused) noexcept;
     float TimeInterpolate(const TimeModel& aFrom, TimeModel& aTo) const;
 
     entt::scoped_connection m_timeUpdateConnection;
     entt::scoped_connection m_timeSkipRequestConnection;
     entt::scoped_connection m_notifyTimeSkipConnection;
+    entt::scoped_connection m_notifyPauseConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_disconnectedConnection;
 
@@ -43,6 +47,9 @@ private:
     float m_fadeTimer = 0.f;
     float m_timeSkipEndDays = 0.f;
     bool m_timeSkipPending = false;
+    bool m_inPausingMenu = false;
+    bool m_paused = false;
+    bool m_freezeTimeBeforePause = false;
     static bool s_gameClockLocked;
 
     uint64_t m_lastTick = 0;

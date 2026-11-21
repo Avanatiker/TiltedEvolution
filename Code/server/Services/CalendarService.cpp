@@ -3,15 +3,22 @@
 #include <GameServer.h>
 #include <World.h>
 
+#include <Events/PlayerEnterWorldEvent.h>
 #include <Events/PlayerJoinEvent.h>
 #include <Events/PlayerLeaveEvent.h>
 #include <Events/UpdateEvent.h>
 
+#include <Messages/NotifyPause.h>
 #include <Messages/NotifyTimeSkip.h>
+#include <Messages/RequestPause.h>
 #include <Messages/RequestTimeSkip.h>
 #include <Messages/ServerTimeSettings.h>
 
+#include <console/Setting.h>
+
 #include "Game/Player.h"
+
+extern Console::Setting<bool> bPauseWhenAllInMenus;
 
 CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher)
     : m_world(aWorld)
@@ -20,6 +27,8 @@ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher)
     m_joinConnection = aDispatcher.sink<PlayerJoinEvent>().connect<&CalendarService::OnPlayerJoin>(this);
     m_leaveConnection = aDispatcher.sink<PlayerLeaveEvent>().connect<&CalendarService::OnPlayerLeave>(this);
     m_timeSkipConnection = aDispatcher.sink<PacketEvent<RequestTimeSkip>>().connect<&CalendarService::OnTimeSkipRequest>(this);
+    m_enterWorldConnection = aDispatcher.sink<PlayerEnterWorldEvent>().connect<&CalendarService::OnPlayerEnterWorld>(this);
+    m_pauseConnection = aDispatcher.sink<PacketEvent<RequestPause>>().connect<&CalendarService::OnPauseRequest>(this);
 }
 
 void CalendarService::OnUpdate(const UpdateEvent&) noexcept
@@ -35,7 +44,13 @@ void CalendarService::OnUpdate(const UpdateEvent&) noexcept
 
     auto delta = now - m_lastTick;
     m_lastTick = now;
-    m_dateTime.Update(delta);
+
+    // The setting can be turned off while the world is paused.
+    if (m_paused && !bPauseWhenAllInMenus)
+        UpdatePause();
+
+    if (!m_paused)
+        m_dateTime.Update(delta);
 }
 
 void CalendarService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
@@ -107,9 +122,12 @@ bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
 void CalendarService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
 {
     m_timeSkipRequests.erase(acEvent.pPlayer);
+    m_pausedPlayers.erase(acEvent.pPlayer);
 
     if (!m_timeSkipRequests.empty())
         UpdateTimeSkip();
+
+    UpdatePause();
 }
 
 void CalendarService::OnTimeSkipRequest(const PacketEvent<RequestTimeSkip>& acMessage) noexcept
@@ -147,6 +165,43 @@ void CalendarService::UpdateTimeSkip() noexcept
     m_timeSkipRequests.clear();
     m_dateTime.AddHours(notify.Hours);
     SendTimeResync();
+}
+
+void CalendarService::OnPlayerEnterWorld(const PlayerEnterWorldEvent&) noexcept
+{
+    UpdatePause();
+}
+
+void CalendarService::OnPauseRequest(const PacketEvent<RequestPause>& acMessage) noexcept
+{
+    if (acMessage.Packet.Paused)
+        m_pausedPlayers.insert(acMessage.pPlayer);
+    else
+        m_pausedPlayers.erase(acMessage.pPlayer);
+
+    UpdatePause();
+}
+
+void CalendarService::UpdatePause() noexcept
+{
+    bool paused = bPauseWhenAllInMenus && !m_pausedPlayers.empty();
+    for (const Player* pPlayer : m_world.GetPlayerManager())
+    {
+        if (pPlayer->GetCellComponent() && !m_pausedPlayers.contains(pPlayer))
+            paused = false;
+    }
+
+    if (paused == m_paused)
+        return;
+
+    m_paused = paused;
+
+    NotifyPause notify;
+    notify.Paused = paused;
+    GameServer::Get()->SendToLoaded(notify);
+
+    if (!paused)
+        SendTimeResync();
 }
 
 void CalendarService::SendTimeResync() noexcept

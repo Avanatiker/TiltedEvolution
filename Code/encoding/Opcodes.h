@@ -56,6 +56,7 @@ enum ClientOpcode : unsigned char
     kSetTimeCommandRequest,
     kRequestActionEvents,
     kRequestTimeSkip,
+    kRequestPause,
     kClientOpcodeMax
 };
 
@@ -118,5 +119,6 @@ enum ServerOpcode : unsigned char
     kNotifySetTimeResult,
     kNotifyActionEvents,
     kNotifyTimeSkip,
+    kNotifyPause,
     kServerOpcodeMax
 };

@@ -3,13 +3,18 @@
 #include <Events/DisconnectedEvent.h>
 #include <Events/TimeSkipRequestEvent.h>
 #include <Events/UpdateEvent.h>
+#include <Messages/NotifyPause.h>
 #include <Messages/NotifyTimeSkip.h>
+#include <Messages/RequestPause.h>
 #include <Messages/RequestTimeSkip.h>
 #include <Messages/ServerTimeSettings.h>
+#include <Services/TransportService.h>
 #include <World.h>
 
 #include <Forms/TESObjectCELL.h>
 #include <Interface/Menus/SleepWaitMenu.h>
+#include <Interface/UI.h>
+#include <Main.h>
 #include <PlayerCharacter.h>
 #include <TimeManager.h>
 
@@ -21,6 +26,17 @@ static bool IsPlayerSleepingOrWaiting() noexcept
 {
     const PlayerCharacter* pPlayer = PlayerCharacter::Get();
     return pPlayer && pPlayer->IsSleepingOrWaiting();
+}
+
+// A menu that pauses the game in single player, including the ones we keep unpaused while connected.
+// Waiting runs through the game update, so the sleep/wait menu stops counting once the wait starts.
+static bool IsInPausingMenu() noexcept
+{
+    const UI* pUI = UI::Get();
+    if (!pUI || IsPlayerSleepingOrWaiting())
+        return false;
+
+    return pUI->numPausesGame > 0 || (UI::ShouldUnpauseMenus() && pUI->IsUnpausedMenuOpen());
 }
 
 // While the player sleeps or waits the game runs its own clock, so the hourly updates see the right time.
@@ -35,6 +51,7 @@ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher, T
     m_timeUpdateConnection = aDispatcher.sink<ServerTimeSettings>().connect<&CalendarService::OnTimeUpdate>(this);
     m_timeSkipRequestConnection = aDispatcher.sink<TimeSkipRequestEvent>().connect<&CalendarService::OnTimeSkipRequest>(this);
     m_notifyTimeSkipConnection = aDispatcher.sink<NotifyTimeSkip>().connect<&CalendarService::OnNotifyTimeSkip>(this);
+    m_notifyPauseConnection = aDispatcher.sink<NotifyPause>().connect<&CalendarService::OnNotifyPause>(this);
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CalendarService::HandleUpdate>(this);
     m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&CalendarService::OnDisconnected>(this);
 }
@@ -87,10 +104,34 @@ void CalendarService::OnNotifyTimeSkip(const NotifyTimeSkip& acMessage) noexcept
     }
 }
 
+void CalendarService::OnNotifyPause(const NotifyPause& acMessage) noexcept
+{
+    SetPaused(acMessage.Paused);
+}
+
+void CalendarService::SetPaused(bool aPaused) noexcept
+{
+    if (aPaused == m_paused)
+        return;
+
+    m_paused = aPaused;
+
+    Main* pMain = Main::Get();
+    if (aPaused)
+    {
+        m_freezeTimeBeforePause = pMain->freezeTime;
+        pMain->freezeTime = true;
+    }
+    else
+        pMain->freezeTime = m_freezeTimeBeforePause;
+}
+
 void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
     m_timeSkipPending = false;
     m_timeSkipEndDays = 0.f;
+    m_inPausingMenu = false;
+    SetPaused(false);
 
     // signal a time transition
     m_fadeTimer = 0.f;
@@ -132,6 +173,19 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
         m_transport.Send(RequestTimeSkip{});
     }
 
+    if (m_transport.IsOnline())
+    {
+        const bool inPausingMenu = IsInPausingMenu();
+        if (inPausingMenu != m_inPausingMenu)
+        {
+            m_inPausingMenu = inPausingMenu;
+
+            RequestPause request;
+            request.Paused = inPausingMenu;
+            m_transport.Send(request);
+        }
+    }
+
     if (s_gameClockLocked)
     {
         const auto updateDelta = static_cast<float>(aEvent.Delta);
@@ -148,6 +202,10 @@ void CalendarService::HandleUpdate(const UpdateEvent& aEvent) noexcept
 
         const auto delta = now - m_lastTick;
         m_lastTick = now;
+
+        // The server holds the shared clock while the world is paused.
+        if (m_paused)
+            return;
 
         m_onlineTime.Update(delta);
 
